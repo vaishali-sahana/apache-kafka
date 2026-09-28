@@ -1,6 +1,7 @@
 # POC 1: Basic Producer & Consumer
 
-Minimal Kafka POC: a producer publishes `orders` events to a topic, a consumer reads and prints them.
+Minimal Kafka POC exposed via FastAPI: a producer endpoint publishes 10 `orders` events to a
+topic, a consumer endpoint polls and returns them as JSON.
 
 ## Setup
 
@@ -14,23 +15,26 @@ Minimal Kafka POC: a producer publishes `orders` events to a topic, a consumer r
    pip install -r requirements.txt
    ```
 
-## Run (CLI scripts)
+## Run
 
-In one terminal, start the consumer (it waits for messages):
+Start the API:
 ```bash
-python consumer.py
+uvicorn app:app --reload --port 8000
 ```
 
-In another terminal, run the producer (sends 10 order events):
+Interactive docs: http://localhost:8000/docs, or use curl:
+
 ```bash
-python producer.py
-```
+# Publish 10 seed orders
+curl -X POST http://localhost:8000/produce/order
 
 ## What to observe
 
-- The producer logs/returns each message's partition and offset once delivered.
-- The consumer prints (or returns as JSON) each order it reads, along with partition/offset.
-- Stop and restart `consumer.py`, or call `/consume` on `consumer.py` again — since it uses `group.id=orders-consumer-group` with committed offsets, it resumes from where it left off rather than re-reading everything.
+- The producer returns each delivered order once `producer.flush()` completes.
+- The consumer returns each order it read within the poll window, along with partition/offset.
+- Call `/consume` again — since it uses `group.id=orders-consumer-group` with committed offsets,
+  it resumes from where it left off rather than re-reading everything already consumed.
+
 
 ## Tear down
 

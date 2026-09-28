@@ -17,40 +17,36 @@ partitions between them.
    pip install -r requirements.txt
    ```
 
-## Run (FastAPI)
+3. Create the topic with 3 partitions (must be done explicitly — auto-created topics default to 1 partition):
+   ```bash
+   python create_topic.py
+   ```
 
-Start the API:
+## Run
+
+Start two or three consumers in separate terminals, each in the same consumer group.
+Each process auto-labels its log lines with its own PID (e.g. `consumer-83421`) so you
+can tell them apart:
 ```bash
-uvicorn app:app --reload --port 8000
+python consumer.py
+python consumer.py
 ```
 
-Docs at http://localhost:8000/docs, or use curl:
-
+Then run the producer (sends 30 order events across 6 customers):
 ```bash
-# Create the topic with 3 partitions (must be done explicitly —
-# auto-created topics default to 1 partition)
-curl -X POST http://localhost:8000/topic/create
-
-# Publish 30 seed customer orders across 6 customers
-curl -X POST http://localhost:8000/produce/seed
-
-# Poll for messages for up to 5 seconds (default). Call this concurrently
-# from two or three terminals to see partitions split across consumers
-# in the same group.
-curl "http://localhost:8000/consume?timeout_seconds=5"
+python producer.py
 ```
 
 ## What to observe
 
-- Each `/consume` call logs (server-side) which partitions it was assigned, and returns
-  `consumer_name`/`assigned_partitions` in the response — Kafka splits the 3 partitions
-  across concurrently polling consumers in the group (e.g. one gets 2 partitions, the other 1).
+- On startup, each consumer logs which partitions it was assigned — Kafka splits the 3
+  partitions across the active consumers in the group (e.g. one gets 2 partitions, the other 1).
 - Events for the same `customer_id` always land on the same partition (keyed partitioning),
   so a given customer's orders are always processed by the same consumer and stay in order.
-- Call `/consume` from a third terminal while the others are idle, then re-seed with
-  `/produce/seed` — Kafka triggers a rebalance and each consumer now gets 1 partition.
-- Stop polling from one terminal and re-seed — the remaining consumers rebalance to cover
-  the freed partition on their next `/consume` call.
+- Start a third consumer (`python consumer.py`) while the group is idle and rerun
+  the producer — Kafka triggers a rebalance and each consumer now gets 1 partition.
+- Stop one consumer with Ctrl+C and rerun the producer — the remaining consumers rebalance to
+  cover the freed partition.
 
 ## Tear down
 

@@ -13,9 +13,9 @@ connect_router = APIRouter()
 
 
 @connect_router.post("/connect/register")
-def register_connector():
+def register_connector(config_file: str = "register-connector.json"):
     try:
-        with open("register-connector.json") as f:
+        with open(config_file) as f:
             config = json.load(f)
         response = requests.post(f"{CONNECT_URL}/connectors", json=config, timeout=10)
         logger.info("register connector response: %s %s", response.status_code, response.text)

@@ -34,12 +34,25 @@ services:
     volumes:
       - ./mysql-init:/docker-entrypoint-initdb.d
 
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    container_name: elasticsearch-poc6
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+
   connect:
-    image: debezium/connect:2.6
+    build:
+      context: .
+      dockerfile: Dockerfile.connect
     container_name: connect-poc6
     depends_on:
       - kafka
       - mysql
+      - elasticsearch
     ports:
       - "8083:8083"
     environment:

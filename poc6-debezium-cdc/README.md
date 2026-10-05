@@ -1,17 +1,22 @@
-# POC 6: Real Debezium CDC on MySQL, Driven from FastAPI
+# POC 6: Real Debezium CDC on MySQL, Fanned Out to Elasticsearch, Driven from FastAPI
 
 This is a real Debezium setup — MySQL with binlog-based replication, a Kafka Connect
-worker running the Debezium MySQL connector, and Kafka itself — with a small FastAPI app
-on top so you write to the database and read the resulting change events through HTTP
-endpoints instead of raw `mysql`/`curl` commands.
+worker running both a Debezium MySQL **source** connector and a Confluent Elasticsearch
+**sink** connector, and Kafka itself — with a small FastAPI app on top so you write to the
+database and read the resulting change events (from Kafka, and from Elasticsearch) through
+HTTP endpoints instead of raw `mysql`/`curl` commands.
 
 ```text
-FastAPI (/customers)  -->  MySQL (binlog)  -->  Debezium connector  -->  Kafka topic  -->  FastAPI (/cdc/events)
+                                                        +--> Kafka topic --> FastAPI (/cdc/events)
+FastAPI (/customers) --> MySQL (binlog) --> Debezium source connector --|
+                                                        +--> ES sink connector --> Elasticsearch --> FastAPI (/es/customers)
 ```
 
 The FastAPI app is a *client* of this pipeline, not part of it — it never touches Kafka on
-the write side. Debezium is the one reading MySQL's binary log and producing events;
-FastAPI just triggers the writes and reads back what Debezium published.
+the write side, and it never writes to Elasticsearch directly. Debezium's source connector
+reads MySQL's binary log and produces events onto a Kafka topic; the Elasticsearch sink
+connector reads that same topic and indexes the documents. FastAPI just triggers the writes
+and reads back what each connector produced.
 
 ## Concepts
 
@@ -22,17 +27,29 @@ FastAPI just triggers the writes and reads back what Debezium published.
 - **Replication user** — MySQL requires a user with `REPLICATION SLAVE`/`REPLICATION
   CLIENT` grants to read the binlog. The `debezium/example-mysql` image ships one out of
   the box: `debezium`/`dbz`, used in `register-connector.json`.
-- **Connector as config, not code** — `register-connector.json` is the entire integration:
-  which database, which table, which user. No producer code was written for the source
-  side; Debezium is a Kafka Connect source connector like any other.
+- **Connector as config, not code** — `register-connector.json` and
+  `register-sink-connector.json` are the entire integration: which database/index, which
+  table/topic, which user. No producer or consumer code was written to move data between
+  Kafka and Elasticsearch; both sides are Kafka Connect connectors like any other.
+- **Source vs. sink** — the MySQL connector is a *source* connector (binlog → Kafka
+  topic); the Elasticsearch connector is a *sink* connector (Kafka topic → ES index). Both
+  run on the same Kafka Connect worker, driven by the same topic,
+  `poc6.poc6_inventory.customers`.
+- **`key.ignore: false`** on the sink connector means the Kafka record key (the row's
+  primary key, set by Debezium) becomes the Elasticsearch document `_id` — so an update to
+  customer 1 overwrites the same ES document instead of creating a new one, and
+  `behavior.on.null.values: delete` turns a Debezium delete tombstone into an ES document
+  delete.
 
 ## Setup
 
-1. Start MySQL, Kafka, and Debezium Connect:
+1. Start MySQL, Kafka, Elasticsearch, and Kafka Connect (the `connect` image is built
+   locally from `Dockerfile.connect`, which layers the Confluent Elasticsearch sink
+   connector on top of `debezium/connect`):
    ```bash
-   docker compose up -d
+   docker compose up -d --build
    ```
-   Give it ~20-30 seconds for Connect to come up after Kafka and MySQL.
+   Give it ~20-30 seconds for Connect to come up after Kafka, MySQL, and Elasticsearch.
 
 2. Install FastAPI app dependencies:
    ```bash
@@ -49,16 +66,23 @@ FastAPI just triggers the writes and reads back what Debezium published.
    curl -X POST http://localhost:8000/setup
    ```
 
-5. Register the Debezium connector. `connect_admin.py` reads `register-connector.json`
-   and forwards it to Connect's REST API (port 8083) on your behalf, so this is reachable
-   from Swagger at http://localhost:8000/docs instead of needing a separate curl call to
-   a different port:
+5. Register the Debezium source connector. `connect_admin.py` reads
+   `register-connector.json` and forwards it to Connect's REST API (port 8083) on your
+   behalf, so this is reachable from Swagger at http://localhost:8000/docs instead of
+   needing a separate curl call to a different port:
    ```bash
    curl -X POST http://localhost:8000/connect/register
    ```
    Check it's running:
    ```bash
    curl http://localhost:8000/connect/status
+   ```
+
+6. Register the Elasticsearch sink connector the same way, pointing at the other config
+   file and connector name:
+   ```bash
+   curl -X POST "http://localhost:8000/connect/register?config_file=register-sink-connector.json"
+   curl "http://localhost:8000/connect/status?name=customers-es-sink"
    ```
 
 ## Run
@@ -83,6 +107,12 @@ binlog:
 curl http://localhost:8000/cdc/events
 ```
 
+And read the same data back out of Elasticsearch — no code in this app indexed anything;
+this is purely what the sink connector consumed off the same Kafka topic and wrote to ES:
+```bash
+curl http://localhost:8000/es/customers
+```
+
 ## What to observe
 
 - The insert shows up with `"op": "c"`, `"before": null`, and an `"after"` object with the
@@ -93,7 +123,13 @@ curl http://localhost:8000/cdc/events
 - `cdc_reader.py` uses a real consumer group (`cdc-reader-group`); call `/cdc/events`
   again with no new writes and you'll get an empty list — it only returns events it
   hasn't already consumed, same as any Kafka consumer.
-
+- `/es/customers` always shows the *current* state (one document per customer, keyed by
+  the row's primary key), unlike `/cdc/events` which shows the stream of individual
+  changes — the same CDC feed consumed two different ways: an event log by the Kafka
+  consumer, and a continuously updated materialized view by the sink connector.
+- Updating a customer updates the same ES document in place (same `_id`); deleting a
+  customer removes the ES document entirely, driven by `behavior.on.null.values: delete`
+  in `register-sink-connector.json`.
 
 ## Tear down
 

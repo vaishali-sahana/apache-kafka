@@ -4,12 +4,14 @@ from fastapi import FastAPI, APIRouter
 from source import source_router
 from cdc_reader import cdc_router
 from connect_admin import connect_router
+from es_reader import es_router
 
 app = FastAPI(title="POC6 - Debezium CDC via FastAPI")
 router = APIRouter()
 router.include_router(source_router)
 router.include_router(cdc_router)
 router.include_router(connect_router)
+router.include_router(es_router)
 
 app.include_router(router)
 
